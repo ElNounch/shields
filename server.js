@@ -176,7 +176,7 @@ function cache(f) {
     }
 
     var cacheIndex = match[0] + '?label=' + data.label + '&style=' + data.style
-      + '&logo=' + data.logo + '&logoWidth=' + data.logoWidth;
+      + '&logo=' + data.logo + '&logoWidth=' + data.logoWidth + '&logoColor=' + data.logoColor;
     // Should we return the data right away?
     var cached = requestCache.get(cacheIndex);
     var cachedVersionSent = false;
@@ -3692,7 +3692,7 @@ function getLabel(label, data) {
   return data.label || label;
 }
 
-// data (URL query) can include `label`, `style`, `logo`, `logoWidth`.
+// data (URL query) can include `label`, `style`, `logo`, `logoColor`, `logoWidth`.
 function getBadgeData(defaultLabel, data) {
   var label = getLabel(defaultLabel, data);
   var template = data.style || 'default';
@@ -3700,7 +3700,7 @@ function getBadgeData(defaultLabel, data) {
     template = data.style;
   };
 
-  if (data.logo !== undefined && !/^data:/.test(data.logo)) {
+  if (data.logo !== undefined && !/^data:/.test(data.logo) && !/^[\w-]+$/.test(data.logo)) {
     data.logo = 'data:' + data.logo;
   }
 
@@ -3709,7 +3709,8 @@ function getBadgeData(defaultLabel, data) {
     colorscheme: 'lightgrey',
     template: template,
     logo: data.logo,
-    logoWidth: +data.logoWidth
+    logoWidth: +data.logoWidth,
+    logoColor: data.logoColor
   };
 }
 

@@ -1,7 +1,39 @@
+var domain = require('domain');
 var fs = require('fs');
 var path = require('path');
 var SVGO = require('svgo');
 var dot = require('dot');
+var LruCache = require('./lru-cache.js');
+var defined = require('defined');
+
+var iconsCache = new LruCache(64, 'unit');
+var measureTextCache = new LruCache(256, 'unit');
+
+var iconShortcuts = {
+  'linux': 'f17c',
+  'windows': 'f17a',
+  'apple': 'f179',
+  'android': 'f17b',
+  'dollar': 'f155',
+  'euro': 'f153',
+  'bug': 'f188',
+  'diamond': 'f219',
+  'book': 'f02d',
+  'code': 'f121',
+  'eye': 'f06e',
+  'check': 'f00c',
+  'cloud': 'f0c2',
+  'cloud-download': 'f0ed',
+  'github': 'f09b',
+  'html5': 'f13b',
+  'smile-o': 'f118',
+  'frown-o': 'f119',
+  'user': 'f007',
+  'users': 'f0c0',
+  'info': 'f129',
+  'heart': 'f004',
+};
+var glyphsPath = path.join(__dirname, 'icons', 'awesome', 'svg');
 
 // Initialize what will be used for automatic text measurement.
 var Canvas = require('canvas');
@@ -28,6 +60,60 @@ templateFiles.forEach(function(filename) {
   templates[style + '-' + extension] = dot.template(templateData);
 });
 
+// Icons
+var svgoIcons = new SVGO();
+var validGlyphs = {};
+(function initValidGlyphs() {
+  var tmp = fs.readdirSync(glyphsPath);
+  if (tmp) {
+    tmp.forEach(function(e) {
+      var file = /^([\w-]+)\.svg$/.exec(e);
+      if (file) {
+        validGlyphs[file[1]] = true;
+      }
+    });
+  }
+}());
+
+var awaiting = {};
+function loadGlyph(glyph, await) {
+  if (awaiting.hasOwnProperty(glyph)) {
+    awaiting[glyph].push(await);
+  } else {
+    awaiting[glyph] = [await];
+    fs.readFile(path.join(glyphsPath, glyph + '.svg'), { encoding: 'utf-8' }, function(err, svg) {
+      if (err) {
+        delete validGlyphs[glyph];
+        callAwaiting();
+      } else {
+        svgoIcons.optimize(svg, function(svgOpti) {
+          iconsCache.set(glyph, 'data:image/svg+xml;utf8,' + encodeURIComponent(svgOpti.data));
+          callAwaiting();
+        })
+      }
+    })
+  }
+  
+  function callAwaiting() {
+    awaiting[glyph].forEach(function(waited) {
+      if (typeof waited !== 'undefined') {
+        makeImage.apply(this, waited);
+      }
+    })
+    delete awaiting[glyph];
+  }
+}
+
+// Cache for string measurements
+function stringWidth( text ) {
+  var result = measureTextCache.get( text );
+  if( typeof result === 'undefined' ) {
+    result = canvasContext.measureText( text ).width;
+    measureTextCache.set( text, result );
+  }
+  return result;
+}
+
 function escapeXml(s) {
   return s.replace(/&/g, '&amp;')
           .replace(/</g, '&lt;')
@@ -41,8 +127,8 @@ function addEscapers(data) {
 
 var colorscheme = require(path.join(__dirname, 'colorscheme.json'));
 
+var svgo = new SVGO();
 function optimize(string, callback) {
-  var svgo = new SVGO();
   svgo.optimize(string, callback);
 }
 
@@ -61,19 +147,40 @@ function makeImage(data, cb) {
     data.colorA = pickedColorscheme.colorA;
     data.colorB = pickedColorscheme.colorB;
   }
-  // Logo.
+  // Icon/Logo.
+  data.logoColor = ((typeof data.logoColor === 'string') && (data.logoColor.length)) ? data.logoColor : '#fff';
   data.logoWidth = +data.logoWidth || (data.logo? 14: 0);
   data.logoPadding = (data.logo? 3: 0);
+  if ((typeof data.logo !== 'undefined') && (/^[\w-]+$/.test(data.logo))) {
+    if (iconShortcuts.hasOwnProperty(data.logo)) {
+      data.logo = iconShortcuts[data.logo];
+    }
+    var svg = iconsCache.get(data.logo);
+    if (typeof svg === 'undefined') {
+      if (!validGlyphs.hasOwnProperty(data.logo)) {
+        data.logo = '';
+      } else {
+        return loadGlyph(data.logo, arguments);
+      }
+    } else {
+      data.logo = svg;
+    }
+  }
+  if (typeof data.logo !== 'undefined') {
+    data.logo = data.logo.replace(encodeURIComponent('<svg '), encodeURIComponent('<svg fill="' + data.logoColor + '" '));
+  }
+
   // String coercion.
   data.text[0] = '' + data.text[0];
   data.text[1] = '' + data.text[1];
   if (data.text[0].length === 0) {
     data.logoPadding = 0;
   }
+
   data.widths = [
-    (canvasContext.measureText(data.text[0]).width|0) + 10
+    (stringWidth(data.text[0])|0) + 10
       + data.logoWidth + data.logoPadding,
-    (canvasContext.measureText(data.text[1]).width|0) + 10,
+    (stringWidth(data.text[1])|0) + 10,
   ];
   if (data.links === undefined) {
     data.links = ['', ''];
@@ -96,4 +203,13 @@ function makeImage(data, cb) {
   }
 }
 
-module.exports = makeImage;
+function encapsulatingMakeImage(data, cb) {
+  var makeImageDomain = domain.create();
+  makeImageDomain.on('error', function(err) {
+    console.error('Badge generator error:', err.stack);
+    cb('', err);
+  });
+  makeImageDomain.bind(makeImage).apply(this, arguments);
+}
+
+module.exports = encapsulatingMakeImage;
